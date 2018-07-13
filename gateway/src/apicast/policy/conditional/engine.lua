@@ -1,3 +1,12 @@
+local lpeg = require('lpeg')
+
+local tostring = tostring
+local ipairs = ipairs
+local loadstring = loadstring
+local pack = table.pack
+local insert = table.insert
+local concat = table.concat
+
 local _M = {}
 
 local value_of = {
@@ -6,23 +15,80 @@ local value_of = {
   request_path = function() return ngx.var.uri end
 }
 
+local function value_of_attr(attr)
+  return '"' .. value_of[attr]() .. '"'
+end
+
+local function to_op(op)
+  if op == "!=" then
+    return "~="
+  else
+    return op
+  end
+end
+
+local function evaluate(...)
+  local expr = {}
+
+  for _, arg in ipairs(pack(...)) do
+    insert(expr, tostring(arg))
+  end
+
+  expr = concat(expr, '')
+
+  local f = loadstring("return " .. expr)
+
+  return f()
+end
+
+local parser = lpeg.P({
+  "expr";
+
+  expr =
+    lpeg.V("spc") *
+    lpeg.V("attr") *
+    lpeg.V("spc") *
+    (
+      lpeg.V("op") *
+      lpeg.V("spc") *
+      lpeg.V("string") *
+      lpeg.V("spc")
+    )^-1
+    / evaluate,
+
+  attr =
+    lpeg.C(
+      lpeg.P('request_method') +
+      lpeg.P('request_host') +
+      lpeg.P('request_path')
+    )
+    / value_of_attr,
+
+  spc = lpeg.S(" \t\n")^0,
+
+  op = lpeg.C(
+         lpeg.P('==') +
+         lpeg.P('~=') +
+         lpeg.P('!=')
+       )
+       / to_op,
+
+  string =
+    lpeg.C(
+      (lpeg.P('"') + lpeg.P("'")) *
+      (
+        lpeg.R("AZ") +
+        lpeg.R("az") +
+        lpeg.R("09") +
+        lpeg.S("/_")
+      )^0 *
+      (lpeg.P('"') + lpeg.P("'"))
+    )
+    / tostring
+})
+
 function _M.evaluate(expression)
-  local match_attr = ngx.re.match(expression, [[^([\w]+)$]], 'oj')
-
-  if match_attr then
-    return value_of[match_attr[1]]()
-  end
-
-  local match_attr_and_value = ngx.re.match(expression, [[^([\w]+) == "([\w/]+)"$]], 'oj')
-
-  if not match_attr_and_value then
-    return nil, 'Error while parsing the condition'
-  end
-
-  local entity = match_attr_and_value[1]
-  local value = match_attr_and_value[2]
-
-  return value_of[entity]() == value
+  return parser:match(expression)
 end
 
 return _M
